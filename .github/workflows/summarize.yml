@@ -1,0 +1,35 @@
+name: bookmark-summarizer
+
+on:
+  schedule:
+    # 15분마다 (UTC 기준이지만 주기 실행이라 시차는 상관없음)
+    # 사용량이 부담되면 아래 숫자만 "*/30 * * * *" 처럼 바꾸면 됨
+    - cron: "*/15 * * * *"
+  workflow_dispatch: # Actions 탭의 "Run workflow" 버튼으로 수동 실행
+
+# 이전 실행이 아직 끝나지 않았으면 겹쳐서 돌지 않게 한다
+concurrency:
+  group: bookmark-summarizer
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - run: python main.py
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # 선택: 저장소 Settings > Variables 에 GEMINI_MODEL 을 만들면 그 모델을 사용
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
