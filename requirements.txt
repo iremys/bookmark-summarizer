@@ -1,0 +1,4 @@
+requests
+trafilatura
+youtube-transcript-api>=1.0.0
+google-genai
