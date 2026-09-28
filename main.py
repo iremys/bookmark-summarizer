@@ -247,11 +247,15 @@ def fetch_webpage(url):
 
 # ---------------------------------------------------------------- Gemini
 def ask_gemini(parts):
-    resp = client.models.generate_content(
+    # 1. 단발성 요청 대신, 도구 호출 문맥을 유지해줄 채팅 세션 생성
+    chat = client.chats.create(
         model=MODEL,
-        contents=parts,
         config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, temperature=0.3),
     )
+    
+    # 2. 채팅 세션을 통해 데이터 전송
+    resp = chat.send_message(parts)
+    
     text = (resp.text or "").strip()
     if not text:
         raise RuntimeError("Gemini가 빈 응답을 반환")
