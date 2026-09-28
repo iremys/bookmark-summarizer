@@ -333,6 +333,9 @@ def process(page):
         if not vid:
             fail_reason = "유튜브 영상 주소를 해석하지 못함"
         else:
+            # ✨ 핵심 추가: 웹클리퍼로 담은 지저분한 주소를 모바일 공유처럼 깔끔하게 세탁
+            url = f"https://www.youtube.com/watch?v={vid}" 
+            
             fetched_title, channel = youtube_meta(url)
             source_text = youtube_transcript(vid)
     else:
