@@ -247,18 +247,19 @@ def fetch_webpage(url):
 
 # ---------------------------------------------------------------- Gemini
 def ask_gemini(parts):
-    # 1. 단발성 요청 대신, 도구 호출 문맥을 유지해줄 채팅 세션 생성
-    chat = client.chats.create(
+    resp = client.models.generate_content(
         model=MODEL,
-        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, temperature=0.3),
+        contents=parts,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT, 
+            temperature=0.3,
+            # ✨ 핵심 해결책: 제멋대로 도구를 호출해서 15분간 무한루프 도는 현상을 원천 차단합니다.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+        ),
     )
-    
-    # 2. 채팅 세션을 통해 데이터 전송
-    resp = chat.send_message(parts)
-    
     text = (resp.text or "").strip()
     if not text:
-        raise RuntimeError("Gemini가 빈 응답을 반환")
+        raise RuntimeError("Gemini가 빈 응답을 반환 (도구 호출 시도 차단됨)")
     return text
 
 
@@ -285,12 +286,14 @@ def summarize_text(title, url, channel, text):
 def summarize_youtube_by_url(video_id):
     """자막을 못 가져왔을 때: Gemini에게 유튜브 URL을 직접 보여준다."""
     watch_url = f"https://www.youtube.com/watch?v={video_id}"
-    parts = types.Content(
-        parts=[
-            types.Part(file_data=types.FileData(file_uri=watch_url)),
-            types.Part(text="이 영상의 내용을 위 지침대로 정리해 줘."),
-        ]
-    )
+    
+    # ✨ 핵심 해결책: types.Content 래퍼를 벗기고 리스트로 묶되, mime_type="video/mp4"를 추가합니다.
+    # 이렇게 하면 Gemini가 쓸데없이 검색 도구를 켜지 않고 영상을 즉시 분석합니다.
+    parts = [
+        types.Part(file_data=types.FileData(file_uri=watch_url, mime_type="video/mp4")),
+        types.Part(text="이 영상의 내용을 위 지침대로 정리해 줘.")
+    ]
+    
     return ask_gemini_with_retry(parts)
 
 
