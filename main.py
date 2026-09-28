@@ -3,16 +3,9 @@
 
 동작:
 1. Notion 데이터베이스에서 "한줄요약"과 "상태"가 비어 있는 줄(= 아직 처리 전)을 찾는다.
-2. URL에서 내용을 가져온다. (유튜브: 자막 / 웹페이지: 본문 / 인스타 등: 캡션)
+2. URL에서 내용을 가져온다. (유튜브: 자막 또는 오디오 / 웹페이지: 본문 / 인스타 등: 캡션)
 3. Gemini로 "한줄요약 + 내용 정리"를 만든다.
 4. 내용 정리는 페이지 본문에, 한줄요약/종류/상태는 속성 칸에 채운다.
-
-환경변수:
-    NOTION_TOKEN        (필수) Notion 통합 시크릿
-    NOTION_DATABASE_ID  (필수) 북마크 데이터베이스 ID
-    GEMINI_API_KEY      (필수) Google AI Studio 키
-    GEMINI_MODEL        (선택) 모델 이름. 비우면 DEFAULT_MODEL 사용
-    MAX_ITEMS           (선택) 한 번 실행에 처리할 최대 개수 (기본 8)
 """
 
 import os
@@ -23,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 import trafilatura
+import yt_dlp
 from google import genai
 from google.genai import types
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -32,13 +26,13 @@ NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-DEFAULT_MODEL = "gemini-flash-latest"
+DEFAULT_MODEL = "gemini-2.5-flash"
 MODEL = os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
 MAX_ITEMS = int(os.environ.get("MAX_ITEMS") or 8)
 SLEEP_BETWEEN = 6  # 초. 무료 티어의 분당 요청 제한을 넘지 않기 위한 간격
-MAX_SOURCE_CHARS = 400_000  # 아주 긴 자막/본문은 여기서 자른다
+MAX_SOURCE_CHARS = 30_000  # API 타임아웃 방지를 위해 40만자 -> 3만자로 축소
 
-# Notion 속성 이름 (표의 컬럼 이름과 정확히 같아야 함)
+# Notion 속성 이름
 P_TITLE = "제목"
 P_URL = "URL"
 P_KIND = "종류"
@@ -82,7 +76,6 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ---------------------------------------------------------------- Notion
 def notion(method, path, **kwargs):
-    """Notion API 호출. 429(요청 과다)면 기다렸다가 재시도한다."""
     url = f"https://api.notion.com/v1{path}"
     for attempt in range(4):
         r = requests.request(method, url, headers=NOTION_HEADERS, timeout=60, **kwargs)
@@ -94,9 +87,7 @@ def notion(method, path, **kwargs):
         return r.json()
     raise RuntimeError(f"Notion {method} {path}: 재시도 초과")
 
-
 def query_pending():
-    """한줄요약과 상태가 모두 비어 있는 줄을 오래된 순으로 가져온다."""
     body = {
         "filter": {
             "and": [
@@ -109,18 +100,13 @@ def query_pending():
     }
     return notion("POST", f"/databases/{DATABASE_ID}/query", json=body)["results"]
 
-
 def plain(rich_text_list):
     return "".join(t.get("plain_text", "") for t in rich_text_list or [])
 
-
 def chunk_text(text, size=1900):
-    """Notion은 텍스트 한 덩어리가 2000자를 넘으면 거부하므로 나눈다."""
     return [text[i : i + size] for i in range(0, len(text), size)] or [""]
 
-
 def text_to_blocks(text):
-    """'## 소제목', '- 항목', 일반 문장을 Notion 블록으로 바꾼다."""
     blocks = []
     for raw in text.splitlines():
         line = raw.replace("**", "").strip()
@@ -144,12 +130,10 @@ def text_to_blocks(text):
             )
     return blocks
 
-
 def append_body(page_id, text):
     blocks = text_to_blocks(text)
-    for i in range(0, len(blocks), 90):  # 한 번에 최대 100개
+    for i in range(0, len(blocks), 90): 
         notion("PATCH", f"/blocks/{page_id}/children", json={"children": blocks[i : i + 90]})
-
 
 def update_page(page_id, *, title=None, url=None, kind=None, summary=None, status=None):
     props = {}
@@ -175,7 +159,6 @@ def kind_of(url):
         return "인스타"
     return "웹페이지"
 
-
 def youtube_id(url):
     u = urlparse(url)
     host = u.netloc.lower()
@@ -193,7 +176,6 @@ def youtube_id(url):
 
 # ---------------------------------------------------------------- 내용 가져오기
 def youtube_meta(url):
-    """oEmbed로 제목과 채널명을 가져온다. 실패해도 무시."""
     try:
         r = requests.get(
             "https://www.youtube.com/oembed",
@@ -204,31 +186,27 @@ def youtube_meta(url):
         if r.ok:
             j = r.json()
             return j.get("title"), j.get("author_name")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"  oEmbed 실패: {type(e).__name__}")
     return None, None
 
-
 def youtube_transcript(video_id):
-    """자막 텍스트를 반환. 못 가져오면 None."""
     api = YouTubeTranscriptApi()
     try:
         fetched = api.fetch(video_id, languages=["ko", "en"])
-    except Exception as e1:  # noqa: BLE001
+    except Exception as e1:
         print(f"  자막(ko/en) 실패: {type(e1).__name__}")
-        try:  # 다른 언어라도 있으면 그걸 쓴다
+        try:
             listing = api.list(video_id)
             first = next(iter(listing))
             fetched = first.fetch()
-        except Exception as e2:  # noqa: BLE001
+        except Exception as e2:
             print(f"  자막(기타 언어) 실패: {type(e2).__name__}")
             return None
     text = " ".join(s.text for s in fetched).strip()
     return text or None
 
-
 def fetch_webpage(url):
-    """(제목, 본문) 반환. 본문이 부족하면 (제목, None)."""
     r = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
     r.raise_for_status()
     if r.encoding is None or r.encoding.lower() == "iso-8859-1":
@@ -238,7 +216,6 @@ def fetch_webpage(url):
     title = meta.title if meta and meta.title else None
     text = trafilatura.extract(html, include_comments=False, include_tables=True)
     if (not text or len(text) < 200) and meta and meta.description:
-        # 인스타 등 본문이 없는 곳은 설명(캡션)이라도 사용
         text = meta.description
     if not text or len(text) < 30:
         return title, None
@@ -247,33 +224,31 @@ def fetch_webpage(url):
 
 # ---------------------------------------------------------------- Gemini
 def ask_gemini(parts):
+    # 자동 함수 호출(AFC) 강제 비활성화로 무한 루프(15분 에러) 원천 차단
     resp = client.models.generate_content(
         model=MODEL,
         contents=parts,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT, 
             temperature=0.3,
-            # ✨ 핵심 해결책: 제멋대로 도구를 호출해서 15분간 무한루프 도는 현상을 원천 차단합니다.
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
         ),
     )
     text = (resp.text or "").strip()
     if not text:
-        raise RuntimeError("Gemini가 빈 응답을 반환 (도구 호출 시도 차단됨)")
+        raise RuntimeError("Gemini가 빈 응답을 반환")
     return text
-
 
 def ask_gemini_with_retry(parts):
     last = None
     for attempt in range(3):
         try:
             return ask_gemini(parts)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             last = e
             print(f"  Gemini 호출 실패({attempt + 1}/3): {type(e).__name__}: {str(e)[:150]}")
             time.sleep(20 * (attempt + 1))
     raise last
-
 
 def summarize_text(title, url, channel, text):
     header = f"제목: {title or '(없음)'}\nURL: {url}\n"
@@ -282,20 +257,42 @@ def summarize_text(title, url, channel, text):
     body = f"{header}\n[원문]\n{text[:MAX_SOURCE_CHARS]}"
     return ask_gemini_with_retry(body)
 
-
-def summarize_youtube_by_url(video_id):
-    """자막을 못 가져왔을 때: Gemini에게 유튜브 URL을 직접 보여준다."""
-    watch_url = f"https://www.youtube.com/watch?v={video_id}"
+def summarize_youtube_by_audio(url):
+    """자막이 없을 때 대안: 오디오를 추출해서 Gemini가 직접 듣고 요약하게 합니다."""
+    print("  자막 없음 -> yt-dlp로 오디오 추출 및 Gemini 오디오 분석 시도...")
     
-    # ✨ 핵심 해결책: types.Content 래퍼를 벗기고 리스트로 묶되, mime_type="video/mp4"를 추가합니다.
-    # 이렇게 하면 Gemini가 쓸데없이 검색 도구를 켜지 않고 영상을 즉시 분석합니다.
-    parts = [
-        types.Part(file_data=types.FileData(file_uri=watch_url, mime_type="video/mp4")),
-        types.Part(text="이 영상의 내용을 위 지침대로 정리해 줘.")
-    ]
+    ydl_opts = {
+        'format': 'm4a/bestaudio/best',
+        'outtmpl': 'temp_audio_%(id)s.%(ext)s',
+        'quiet': True,
+    }
     
-    return ask_gemini_with_retry(parts)
-
+    filename = None
+    uploaded_file = None
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            
+        uploaded_file = client.files.upload(file=filename)
+        
+        parts = [
+            uploaded_file,
+            "이 파일은 유튜브 영상의 오디오입니다. 위 지침대로 내용을 요약해 줘."
+        ]
+        
+        return ask_gemini_with_retry(parts)
+        
+    finally:
+        # 로컬 임시 파일 삭제
+        if filename and os.path.exists(filename):
+            os.remove(filename)
+        # 구글 서버에 업로드된 임시 파일 삭제 (용량 제한 방지)
+        if uploaded_file:
+            try:
+                client.files.delete(name=uploaded_file.name)
+            except Exception as e:
+                print(f"  (경고) 구글 서버 임시 오디오 삭제 실패: {e}")
 
 def split_summary(text):
     lines = text.strip().splitlines()
@@ -316,7 +313,7 @@ def process(page):
     url = (props.get(P_URL) or {}).get("url")
 
     url_from_title = False
-    if not url:  # 폰 공유 등으로 링크가 제목에 들어간 경우
+    if not url:
         m = URL_RE.search(title)
         if m:
             url = m.group(0).rstrip(").,]")
@@ -341,13 +338,12 @@ def process(page):
     else:
         try:
             fetched_title, source_text = fetch_webpage(url)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             fail_reason = f"페이지를 열지 못함({type(e).__name__})"
         else:
             if not source_text:
                 fail_reason = "본문을 가져오지 못함(로그인 필요 등)"
 
-    # 제목 결정: 기존 제목이 비었거나 링크뿐이면 가져온 제목을 쓴다
     new_title = None
     if not clean_title:
         new_title = fetched_title or url
@@ -359,12 +355,11 @@ def process(page):
         if source_text:
             answer = summarize_text(clean_title or fetched_title, url, channel, source_text)
         elif vid:
-            print("  자막 없음 -> Gemini가 영상 URL을 직접 보도록 시도")
-            answer = summarize_youtube_by_url(vid)
+            # ✨ 수정: 자막이 없으면 오디오 요약 함수 호출
+            answer = summarize_youtube_by_audio(url)
         else:
             answer = None
-    except Exception as e:  # noqa: BLE001
-        # 일시적 오류일 수 있으니 표시하지 않고 다음 실행에서 다시 시도한다
+    except Exception as e:
         print(f"  요약 실패, 다음 실행에서 재시도: {type(e).__name__}: {str(e)[:150]}")
         return
 
@@ -405,7 +400,7 @@ def main():
     for n, page in enumerate(pages):
         try:
             process(page)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"  처리 중 오류: {type(e).__name__}: {str(e)[:200]}")
         if n < len(pages) - 1:
             time.sleep(SLEEP_BETWEEN)
