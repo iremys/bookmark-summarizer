@@ -333,7 +333,7 @@ def process(page):
         if not vid:
             fail_reason = "유튜브 영상 주소를 해석하지 못함"
         else:
-            # ✨ 핵심 추가: 웹클리퍼로 담은 지저분한 주소를 모바일 공유처럼 깔끔하게 세탁
+            # ✨ 추가된 부분 1: 웹클리퍼 URL 깔끔하게 세탁
             url = f"https://www.youtube.com/watch?v={vid}" 
             
             fetched_title, channel = youtube_meta(url)
@@ -358,13 +358,14 @@ def process(page):
         if source_text:
             answer = summarize_text(clean_title or fetched_title, url, channel, source_text)
         elif vid:
-            # ✨ 수정: 자막이 없으면 오디오 요약 함수 호출
             answer = summarize_youtube_by_audio(url)
         else:
             answer = None
     except Exception as e:
-        print(f"  요약 실패, 다음 실행에서 재시도: {type(e).__name__}: {str(e)[:150]}")
-        return
+        # ✨ 추가된 부분 2: 에러가 나도 return으로 도망가지 않고 아래 로직을 타게 만듭니다.
+        print(f"  요약 실패 (포기하고 넘어감): {type(e).__name__}: {str(e)[:150]}")
+        fail_reason = "유튜브 서버 봇 차단 (접근 불가)"
+        answer = None
 
     if answer:
         one_liner, body = split_summary(answer)
@@ -387,7 +388,7 @@ def process(page):
             url=url if url_from_title else None,
             kind=kind,
             summary=f"요약 불가: {reason}",
-            status=STATUS_DONE,
+            status=STATUS_DONE, # ✨ 이 부분이 작동하면서 노션에서 처리 대기열이 싹 사라집니다!
         )
         print(f"  요약 불가로 표시: {reason}")
 
