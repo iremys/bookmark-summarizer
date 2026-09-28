@@ -1,11 +1,5 @@
 """
 북마크 자동 정리 스크립트
-
-동작:
-1. Notion 데이터베이스에서 "한줄요약"과 "상태"가 비어 있는 줄(= 아직 처리 전)을 찾는다.
-2. URL에서 내용을 가져온다. (유튜브: 자막 또는 오디오 / 웹페이지: 본문 / 인스타 등: 캡션)
-3. Gemini로 "한줄요약 + 내용 정리"를 만든다.
-4. 내용 정리는 페이지 본문에, 한줄요약/종류/상태는 속성 칸에 채운다.
 """
 
 import os
@@ -29,10 +23,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DEFAULT_MODEL = "gemini-2.5-flash"
 MODEL = os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
 MAX_ITEMS = int(os.environ.get("MAX_ITEMS") or 8)
-SLEEP_BETWEEN = 6  # 초. 무료 티어의 분당 요청 제한을 넘지 않기 위한 간격
-MAX_SOURCE_CHARS = 30_000  # API 타임아웃 방지를 위해 40만자 -> 3만자로 축소
+SLEEP_BETWEEN = 6  
+MAX_SOURCE_CHARS = 30_000  
 
-# Notion 속성 이름
 P_TITLE = "제목"
 P_URL = "URL"
 P_KIND = "종류"
@@ -224,7 +217,6 @@ def fetch_webpage(url):
 
 # ---------------------------------------------------------------- Gemini
 def ask_gemini(parts):
-    # 자동 함수 호출(AFC) 강제 비활성화로 무한 루프(15분 에러) 원천 차단
     resp = client.models.generate_content(
         model=MODEL,
         contents=parts,
@@ -258,13 +250,14 @@ def summarize_text(title, url, channel, text):
     return ask_gemini_with_retry(body)
 
 def summarize_youtube_by_audio(url):
-    """자막이 없을 때 대안: 오디오를 추출해서 Gemini가 직접 듣고 요약하게 합니다."""
     print("  자막 없음 -> yt-dlp로 오디오 추출 및 Gemini 오디오 분석 시도...")
     
     ydl_opts = {
         'format': 'm4a/bestaudio/best',
         'outtmpl': 'temp_audio_%(id)s.%(ext)s',
         'quiet': True,
+        # ✨ 핵심 추가: GitHub Actions에서 생성된 cookies.txt를 사용하여 봇 차단 우회
+        'cookiefile': 'cookies.txt', 
     }
     
     filename = None
@@ -284,10 +277,8 @@ def summarize_youtube_by_audio(url):
         return ask_gemini_with_retry(parts)
         
     finally:
-        # 로컬 임시 파일 삭제
         if filename and os.path.exists(filename):
             os.remove(filename)
-        # 구글 서버에 업로드된 임시 파일 삭제 (용량 제한 방지)
         if uploaded_file:
             try:
                 client.files.delete(name=uploaded_file.name)
@@ -333,7 +324,6 @@ def process(page):
         if not vid:
             fail_reason = "유튜브 영상 주소를 해석하지 못함"
         else:
-            # ✨ 추가된 부분 1: 웹클리퍼 URL 깔끔하게 세탁
             url = f"https://www.youtube.com/watch?v={vid}" 
             
             fetched_title, channel = youtube_meta(url)
@@ -362,9 +352,9 @@ def process(page):
         else:
             answer = None
     except Exception as e:
-        # ✨ 추가된 부분 2: 에러가 나도 return으로 도망가지 않고 아래 로직을 타게 만듭니다.
         print(f"  요약 실패 (포기하고 넘어감): {type(e).__name__}: {str(e)[:150]}")
-        fail_reason = "유튜브 서버 봇 차단 (접근 불가)"
+        # 혹시 쿠키가 만료되거나 다른 에러로 실패할 경우 멈추지 않게 쿨하게 포기하는 안전장치입니다.
+        fail_reason = "유튜브 서버 봇 차단 또는 기타 오류 (접근 불가)"
         answer = None
 
     if answer:
@@ -388,7 +378,7 @@ def process(page):
             url=url if url_from_title else None,
             kind=kind,
             summary=f"요약 불가: {reason}",
-            status=STATUS_DONE, # ✨ 이 부분이 작동하면서 노션에서 처리 대기열이 싹 사라집니다!
+            status=STATUS_DONE,
         )
         print(f"  요약 불가로 표시: {reason}")
 
