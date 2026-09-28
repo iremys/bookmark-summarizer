@@ -1,8 +1,8 @@
 name: Summarize Bookmarks
 
 on:
-  #schedule:
-   #- cron: '0 * * * *' # 필요에 따라 주기 변경 가능
+  # schedule:
+    # - cron: '0 * * * *' # 필요에 따라 주기 변경 가능
   workflow_dispatch:
 
 jobs:
@@ -11,22 +11,32 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4  # v4로 업데이트
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5 # v5로 업데이트
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11' 
           cache: 'pip'
 
+      # ✨ 추가 1: 유튜브의 봇 차단 로직(JS)을 우회/해독하기 위해 Node.js를 설치합니다.
+      - name: Setup Node.js (Required for yt-dlp)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -U yt-dlp
           pip install -r requirements.txt
           
-      # yt-dlp 작동에 필요한 ffmpeg(오디오 처리) 설치
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      # ✨ 추가 2: GitHub Secrets에 등록한 쿠키를 파이썬 스크립트가 읽을 수 있도록 파일로 만듭니다.
+      - name: Create Youtube Cookies File
+        run: echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
 
       - name: Run script
         env:
