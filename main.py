@@ -20,7 +20,8 @@ NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+# DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-2.0-flash"
 MODEL = os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
 MAX_ITEMS = int(os.environ.get("MAX_ITEMS") or 8)
 SLEEP_BETWEEN = 6  
