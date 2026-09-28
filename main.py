@@ -354,8 +354,11 @@ def process(page):
             answer = None
     except Exception as e:
         print(f"  요약 실패 (포기하고 넘어감): {type(e).__name__}: {str(e)[:150]}")
-        # 혹시 쿠키가 만료되거나 다른 에러로 실패할 경우 멈추지 않게 쿨하게 포기하는 안전장치입니다.
-        fail_reason = "유튜브 서버 봇 차단 또는 기타 오류 (접근 불가)"
+        # ✨ 수정: 유튜브일 때와 웹페이지일 때 에러 사유를 다르게 적어줍니다.
+        if kind == "유튜브":
+            fail_reason = "유튜브 서버 봇 차단 또는 오디오 추출 실패"
+        else:
+            fail_reason = f"Gemini API 요약 오류 ({type(e).__name__})"
         answer = None
 
     if answer:
